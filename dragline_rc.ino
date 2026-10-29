@@ -1,8 +1,4 @@
 /*
- * Developed by Marcos Isunza
- *
- * V 1.0
- *
  * RC Dragline Crane – Web control for 6 motors
  * ESP32 + 3× L298N motor drivers. Arduino IDE (ESP32 core 3.x).
  *
@@ -27,9 +23,9 @@
  *
  *   Index  Function           Direction Labels
  *   ─────  ─────────────────  ──────────────────
- *     0    Boom Winch         Up (1) / Down (-1)
+ *     0    Tilt Winch         Tilt (1) / Dump (-1)
  *     1    Bucket Winch       Up (1) / Down (-1)
- *     2    Tilt Winch         Tilt (1) / Dump (-1)
+ *     2    Boom Winch         Up (1) / Down (-1)
  *     3    Rotation           Right (1) / Left (-1)
  *     4    Left Track         Fwd (1) / Rev (-1)
  *     5    Right Track        Fwd (1) / Rev (-1)
@@ -81,11 +77,12 @@
  *   Phone web page still loads; /allstop always works as emergency backup.
  *
  *   Button map (hold to run, release to stop):
- *     Left stick Y     Tracks 4+5 both fwd/rev
- *     Left stick X     Tracks tank turn (one fwd, one rev)
- *     D-pad Up/Down    Boom winch (0) up/down
- *     D-pad Left/Right Bucket winch (1) up/down
- *     Triangle/Cross   Tilt winch (2) tilt/dump
+ *     Left stick Y     Left track (4) fwd (up) / rev (down)
+ *     Right stick Y    Right track (5) fwd (up) / rev (down)
+ *                      (both up = straight, opposite = tank turn)
+ *     D-pad Up/Down    Bucket winch (1) up/down
+ *     D-pad Left/Right Boom winch (2) up/down
+ *     Triangle/Cross   Tilt winch (0) tilt/dump
  *     L1 / R1          Rotation (3) left/right
  *     PS button        All-stop
  *
@@ -105,9 +102,9 @@
  *
  *   Motor            Board  Ch   EN   IN1  IN2
  *   ───────────────  ─────  ──   ───  ───  ───
- *   0: Boom Winch      1     A   23   22   21
+ *   0: Tilt Winch      1     A   23   22   21
  *   1: Bucket Winch    1     B   19   18    5
- *   2: Tilt Winch      2     A   17   16    4
+ *   2: Boom Winch      2     A   17   16    4
  *   3: Rotation        2     B   25   26   27
  *   4: Left Track      3     A   14   12   13
  *   5: Right Track     3     B   33   32   15
@@ -118,6 +115,7 @@
  *   OLED I2C SDA       TX         1   SSD1306 128×32 data
  *   Fault LED          P2         2   Fast blink if WiFi AP fails
  *   OLED I2C SCL       RX         3   SSD1306 128×32 clock
+ *   OLED turns off after 10 min with no motors running and no user input.
  *
  *   Do NOT use SD0–SD3 (GPIO 7–10) — connected to internal flash.
  *   Do NOT use P34, P35, SVP (GPIO 34–36) — input-only, no LED/I2C.
@@ -174,9 +172,9 @@
  *     │    ▼    ▼         ▼    ▼         ▼    ▼      │          │
  *     │  ┌──┐ ┌──┐     ┌──┐ ┌──┐     ┌──┐ ┌──┐     │          │
  *     │  │M0│ │M1│     │M2│ │M3│     │M4│ │M5│     │          │
- *     │  │B │ │Bk│     │Ti│ │Ro│     │LT│ │RT│     │          │
+ *     │  │Ti│ │Bk│     │B │ │Ro│     │LT│ │RT│     │          │
  *     │  └──┘ └──┘     └──┘ └──┘     └──┘ └──┘     │          │
- *     │  Boom  Bucket   Tilt  Rot     LTrk  RTrk    │          │
+ *     │  Tilt  Bucket   Boom  Rot     LTrk  RTrk    │          │
  *     │                                              │          │
  *     │          5V                                  │          │
  *     │    ┌─────┘ (from Board 1 regulator)          │          │
@@ -216,9 +214,9 @@
  *     │                                              │
  *     └──────────────────────────────────────────────┘
  *
- *   Legend: M0=Boom Winch, M1=Bucket Winch, M2=Tilt Winch,
+ *   Legend: M0=Tilt Winch, M1=Bucket Winch, M2=Boom Winch,
  *           M3=Rotation, M4=Left Track, M5=Right Track
- *           B=Boom, Bk=Bucket, Ti=Tilt, Ro=Rotation,
+ *           Ti=Tilt, Bk=Bucket, B=Boom, Ro=Rotation,
  *           LT=Left Track, RT=Right Track
  *
  * ═══════════════════════════════════════════════════════════════════════
@@ -256,9 +254,9 @@ struct MotorPins {
 
 const MotorPins MOTORS[NUM_MOTORS] = {
   // { EN,  IN1, IN2 }       Motor           L298N Board/Channel
-  {  23,  22,  21  },  // 0: Boom Winch     – Board 1, Channel A
+  {  23,  22,  21  },  // 0: Tilt Winch     – Board 1, Channel A
   {  19,  18,   5  },  // 1: Bucket Winch   – Board 1, Channel B
-  {  17,  16,   4  },  // 2: Tilt Winch     – Board 2, Channel A
+  {  17,  16,   4  },  // 2: Boom Winch     – Board 2, Channel A
   {  25,  26,  27  },  // 3: Rotation       – Board 2, Channel B
   {  14,  12,  13  },  // 4: Left Track     – Board 3, Channel A
   {  33,  32,  15  },  // 5: Right Track    – Board 3, Channel B
@@ -277,13 +275,13 @@ const MotorPins MOTORS[NUM_MOTORS] = {
 #define TRACK_DIR_DEBOUNCE_MS 100
 
 // PS3-only PWM per motor (0-255). Web sliders are unaffected.
-#define PS3_SPEED_BOOM       200
+#define PS3_SPEED_TILT       210
 #define PS3_SPEED_BUCKET     200
-#define PS3_SPEED_TILT       240
+#define PS3_SPEED_BOOM       200
 #define PS3_SPEED_ROTATION   255
 
 const uint8_t PS3_MOTOR_SPEED[NUM_MOTORS] = {
-  PS3_SPEED_BOOM, PS3_SPEED_BUCKET, PS3_SPEED_TILT, PS3_SPEED_ROTATION,
+  PS3_SPEED_TILT, PS3_SPEED_BUCKET, PS3_SPEED_BOOM, PS3_SPEED_ROTATION,
   TRACK_PWM_TARGET, TRACK_PWM_TARGET  // tracks unchanged — use ramp logic
 };
 
@@ -305,18 +303,27 @@ const uint8_t PS3_MOTOR_SPEED[NUM_MOTORS] = {
 #define STICK_DEADZONE       50   // engage: stick must exceed this to start tracks
 #define STICK_RELEASE_ZONE   28   // release: stick must fall below this to stop (hysteresis)
 #define PS3_IDLE_STICK_ZONE  90   // stick drift below this does not reset idle timer
-#define STICK_TURN_BIAS      14   // lx*10 must exceed ly*10*1.4 to prefer tank turn over fwd/rev
 #define PS3_POLL_MS          20   // limit PS3 input polling rate (Hz) to reduce BT/CPU load
 #define PS3_DISPLAY_MIN_MS  120   // min interval between OLED updates during PS3 control
 #define PS3_IDLE_MS      (5UL * 60 * 1000)  // auto sleep after 5 min PS3 inactivity
 #define PS3_IDLE_WARN_MS    (30UL * 1000)   // show idle countdown after 30 s quiet
 #define PS3_STALE_MS        (30UL * 1000)   // no BT packets for 30 s → treat as disconnected
 #define PS3_SLEEP_OLED_MS   (15UL * 1000)   // full-screen sleep message, then phone-style OLED
+#define OLED_IDLE_MS     (10UL * 60 * 1000) // blank OLED after 10 min inactivity
 #define BOOT_MAC_DISPLAY_MS 10000
+
+#ifndef SSD1306_DISPLAYOFF
+#define SSD1306_DISPLAYOFF 0xAE
+#endif
+#ifndef SSD1306_DISPLAYON
+#define SSD1306_DISPLAYON 0xAF
+#endif
 
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
 
 bool     oledReady = false;
+bool     oledPanelOn = true;
+uint32_t lastOledActivityMs = 0;
 uint32_t lastDisplayUpdate = 0;
 bool     ps3Ready = false;
 bool     ps3Connected = false;
@@ -325,7 +332,7 @@ char     ps3BtMac[18] = "";
 uint32_t bootMacDisplayEnd = 0;
 uint32_t lastPs3PollMs = 0;
 uint32_t lastPs3DisplayMs = 0;
-bool     ps3TracksActive = false;
+bool     ps3TrackActive[2] = { false, false };  // per-stick hysteresis state (L, R)
 bool     ps3SleepMode = false;
 uint32_t ps3SleepSinceMs = 0;
 uint32_t bootTimeMs = 0;
@@ -333,11 +340,11 @@ uint32_t lastPs3ActivityMs = 0;
 uint32_t lastPs3PacketMs = 0;
 uint8_t  trackPwmLevel[2] = { 0, 0 };
 uint32_t lastTrackRampMs = 0;
-uint32_t lastTrackStickMs = 0;
-uint32_t trackStopRequestMs = 0;
+uint32_t lastTrackStickMs[2] = { 0, 0 };
+uint32_t trackStopRequestMs[2] = { 0, 0 };
 
 const char* MOTOR_NAMES[NUM_MOTORS] = {
-  "Boom", "Bucket", "Tilt", "Rot", "LTrk", "RTrk"
+  "Tilt", "Bucket", "Boom", "Rot", "LTrk", "RTrk"
 };
 
 // ─── Runtime State ──────────────────────────────────────────────────────────
@@ -370,9 +377,9 @@ const uint8_t iconRight[] PROGMEM = {
 const char* motorActionLabel(int motor, int8_t dir) {
   if (dir == 0) return nullptr;
   switch (motor) {
-    case 0: return (dir > 0) ? "UP" : "DN";
+    case 0: return (dir > 0) ? "TILT" : "DUMP";
     case 1: return (dir > 0) ? "UP" : "DN";
-    case 2: return (dir > 0) ? "TILT" : "DUMP";
+    case 2: return (dir > 0) ? "UP" : "DN";
     case 3: return (dir > 0) ? "R" : "L";
     case 4:
     case 5: return (dir > 0) ? "FWD" : "REV";
@@ -591,8 +598,50 @@ bool initDisplay() {
   return true;
 }
 
+void oledSendCommand(uint8_t cmd) {
+  Wire.beginTransmission(OLED_ADDR);
+  Wire.write((uint8_t)0x00);
+  Wire.write(cmd);
+  Wire.endTransmission();
+}
+
+void oledSetPanelPower(bool on) {
+  if (!oledReady || on == oledPanelOn) {
+    return;
+  }
+  oledPanelOn = on;
+  oledSendCommand(on ? SSD1306_DISPLAYON : SSD1306_DISPLAYOFF);
+  if (on) {
+    lastDisplayUpdate = 0;
+    updateDisplay();
+  }
+}
+
+void bumpOledActivity() {
+  lastOledActivityMs = millis();
+  if (!oledPanelOn) {
+    oledSetPanelPower(true);
+  }
+}
+
+void tickOledSleep() {
+  if (!oledReady || !oledPanelOn) {
+    return;
+  }
+  if (millis() < bootMacDisplayEnd && !ps3Connected) {
+    return;
+  }
+  if (anyMotorActive()) {
+    lastOledActivityMs = millis();
+    return;
+  }
+  if (millis() - lastOledActivityMs >= OLED_IDLE_MS) {
+    oledSetPanelPower(false);
+  }
+}
+
 void updateDisplay() {
-  if (!oledReady) return;
+  if (!oledReady || !oledPanelOn) return;
 
   if (millis() < bootMacDisplayEnd && !ps3Connected) {
     showBootBtMacScreen();
@@ -697,6 +746,10 @@ void setMotor(int motor, int8_t dir, uint8_t speed, bool ps3Drive = false) {
 
   motorDir[motor] = dir;
 
+  if (dir != prevDir) {
+    bumpOledActivity();
+  }
+
   if (isTrack) {
     motorSpeed[motor] = TRACK_PWM_TARGET;
   } else if (ps3Drive) {
@@ -755,6 +808,7 @@ void tickTrackRamp() {
 }
 
 void allStop() {
+  bumpOledActivity();
   for (int i = 0; i < NUM_MOTORS; i++) {
     setMotor(i, 0, motorSpeed[i]);
   }
@@ -769,41 +823,26 @@ int stickAxisFiltered(int raw, bool wasActive) {
   return raw;
 }
 
-void computeTrackDirs(int rawLx, int rawLy, int8_t& leftDir, int8_t& rightDir) {
-  leftDir  = 0;
-  rightDir = 0;
+void resetPs3TrackState() {
+  ps3TrackActive[0] = false;
+  ps3TrackActive[1] = false;
+}
 
-  int lx = stickAxisFiltered(rawLx, ps3TracksActive);
-  int ly = stickAxisFiltered(rawLy, ps3TracksActive);
+// Left stick Y drives the left track, right stick Y drives the right track.
+// Stick up (negative Y) = forward, stick down = reverse.
+void computeTrackDirs(int rawLy, int rawRy, int8_t& leftDir, int8_t& rightDir) {
+  const int raw[2] = { rawLy, rawRy };
+  int8_t dir[2] = { 0, 0 };
 
-  if (lx == 0 && ly == 0) {
-    ps3TracksActive = false;
-    return;
+  for (int i = 0; i < 2; i++) {
+    int y = stickAxisFiltered(raw[i], ps3TrackActive[i]);
+    ps3TrackActive[i] = (y != 0);
+    if (y < 0)      dir[i] = 1;
+    else if (y > 0) dir[i] = -1;
   }
 
-  ps3TracksActive = true;
-
-  int absLx = abs(lx) * 10;
-  int absLy = abs(ly) * 10;
-
-  // Prefer tank turn only when X clearly dominates Y (avoids axis flip-flop)
-  if (lx != 0 && (ly == 0 || absLx > (absLy * STICK_TURN_BIAS) / 10)) {
-    if (lx < 0) {
-      leftDir  = -1;
-      rightDir =  1;
-    } else {
-      leftDir  =  1;
-      rightDir = -1;
-    }
-  } else if (ly != 0) {
-    if (ly < 0) {
-      leftDir  = 1;
-      rightDir = 1;
-    } else {
-      leftDir  = -1;
-      rightDir = -1;
-    }
-  }
+  leftDir  = dir[0];
+  rightDir = dir[1];
 }
 
 bool ps3HasMeaningfulInput() {
@@ -813,9 +852,9 @@ bool ps3HasMeaningfulInput() {
       Ps3.data.button.l1 || Ps3.data.button.r1) {
     return true;
   }
-  int lx = Ps3.data.analog.stick.lx;
   int ly = Ps3.data.analog.stick.ly;
-  return abs(lx) > STICK_DEADZONE || abs(ly) > STICK_DEADZONE;
+  int ry = Ps3.data.analog.stick.ry;
+  return abs(ly) > STICK_DEADZONE || abs(ry) > STICK_DEADZONE;
 }
 
 bool ps3ResetsIdleTimer() {
@@ -826,9 +865,9 @@ bool ps3ResetsIdleTimer() {
     return true;
   }
   // Ignore small stick drift — only deliberate stick movement resets idle countdown
-  int lx = Ps3.data.analog.stick.lx;
   int ly = Ps3.data.analog.stick.ly;
-  return abs(lx) > PS3_IDLE_STICK_ZONE || abs(ly) > PS3_IDLE_STICK_ZONE;
+  int ry = Ps3.data.analog.stick.ry;
+  return abs(ly) > PS3_IDLE_STICK_ZONE || abs(ry) > PS3_IDLE_STICK_ZONE;
 }
 
 bool isWebLocked() {
@@ -847,6 +886,7 @@ void pollPs3Input() {
 
   if (ps3ResetsIdleTimer()) {
     lastPs3ActivityMs = millis();
+    bumpOledActivity();
   }
 
   if (Ps3.data.button.ps) {
@@ -856,43 +896,46 @@ void pollPs3Input() {
 
   int8_t dirs[NUM_MOTORS] = { 0, 0, 0, 0, 0, 0 };
 
-  computeTrackDirs(Ps3.data.analog.stick.lx, Ps3.data.analog.stick.ly, dirs[4], dirs[5]);
+  computeTrackDirs(Ps3.data.analog.stick.ly, Ps3.data.analog.stick.ry, dirs[4], dirs[5]);
 
-  // Debounce track direction changes (ignore brief stick wobble)
-  bool trackStickChange = (dirs[4] != motorDir[4] || dirs[5] != motorDir[5]);
-  if (trackStickChange && !(dirs[4] == 0 && dirs[5] == 0)) {
-    uint32_t now = millis();
-    if (now - lastTrackStickMs < TRACK_DIR_DEBOUNCE_MS) {
-      dirs[4] = motorDir[4];
-      dirs[5] = motorDir[5];
+  // Per-track filtering, so each stick is debounced independently
+  uint32_t now = millis();
+  for (int i = 0; i < 2; i++) {
+    int m = 4 + i;
+    bool stickChange = (dirs[m] != motorDir[m]);
+
+    // Debounce direction changes (ignore brief stick wobble)
+    if (stickChange && dirs[m] != 0) {
+      if (now - lastTrackStickMs[i] < TRACK_DIR_DEBOUNCE_MS) {
+        dirs[m] = motorDir[m];
+      } else {
+        lastTrackStickMs[i] = now;
+      }
+    }
+
+    // Hold track running through brief stick-center gaps (prevents ramp reset pulsing)
+    if (dirs[m] == 0 && motorDir[m] != 0) {
+      if (trackStopRequestMs[i] == 0) {
+        trackStopRequestMs[i] = now;
+      }
+      if (now - trackStopRequestMs[i] < TRACK_STOP_HOLD_MS) {
+        dirs[m] = motorDir[m];
+      }
     } else {
-      lastTrackStickMs = now;
+      trackStopRequestMs[i] = 0;
+      if (stickChange && dirs[m] == 0) {
+        lastTrackStickMs[i] = now;
+      }
     }
   }
 
-  // Hold tracks running through brief stick-center gaps (prevents ramp reset pulsing)
-  if (dirs[4] == 0 && dirs[5] == 0 && (motorDir[4] != 0 || motorDir[5] != 0)) {
-    if (trackStopRequestMs == 0) {
-      trackStopRequestMs = millis();
-    }
-    if (millis() - trackStopRequestMs < TRACK_STOP_HOLD_MS) {
-      dirs[4] = motorDir[4];
-      dirs[5] = motorDir[5];
-    }
-  } else {
-    trackStopRequestMs = 0;
-    if (trackStickChange && dirs[4] == 0 && dirs[5] == 0) {
-      lastTrackStickMs = millis();
-    }
-  }
+  if (Ps3.data.button.up)    dirs[1] = 1;
+  if (Ps3.data.button.down)  dirs[1] = -1;
+  if (Ps3.data.button.left)  dirs[2] = 1;
+  if (Ps3.data.button.right) dirs[2] = -1;
 
-  if (Ps3.data.button.up)    dirs[0] = 1;
-  if (Ps3.data.button.down)  dirs[0] = -1;
-  if (Ps3.data.button.left)  dirs[1] = 1;
-  if (Ps3.data.button.right) dirs[1] = -1;
-
-  if (Ps3.data.button.triangle) dirs[2] = 1;
-  if (Ps3.data.button.cross)    dirs[2] = -1;
+  if (Ps3.data.button.triangle) dirs[0] = 1;
+  if (Ps3.data.button.cross)    dirs[0] = -1;
 
   if (Ps3.data.button.l1) dirs[3] = -1;
   if (Ps3.data.button.r1) dirs[3] = 1;
@@ -921,7 +964,7 @@ void tickPs3Connection() {
   }
 
   if (!linkUp && ps3WasConnected) {
-    ps3TracksActive = false;
+    resetPs3TrackState();
     if (!ps3SleepMode) {
       WiFi.setTxPower(WIFI_POWER_19_5dBm);
       allStop();
@@ -961,6 +1004,7 @@ void onPs3Data() {
 void onPs3Connect() {
   ps3SleepMode = false;
   ps3Connected = true;
+  bumpOledActivity();
   lastPs3ActivityMs = millis();
   lastPs3PacketMs = millis();
   Ps3.setPlayer(1);
@@ -971,7 +1015,7 @@ void onPs3Connect() {
 }
 
 void onPs3Disconnect() {
-  ps3TracksActive = false;
+  resetPs3TrackState();
   // Keep ps3SleepMode — idle-sleep disconnect must not clear it
   ps3Connected = false;
   ps3WasConnected = false;
@@ -998,7 +1042,7 @@ void clearPs3SleepForPhone() {
 
 void forcePs3Sleep() {
   allStop();
-  ps3TracksActive = false;
+  resetPs3TrackState();
   if (ps3Ready && Ps3.isConnected()) {
     Ps3.setRumble(0.0f, 0);
     Ps3.setPlayer(0);
@@ -1016,6 +1060,7 @@ void forcePs3Sleep() {
   }
   refreshStatus();
   Serial.println(F("[DraglineCrane] PS3 idle sleep — BT disconnected, phone unlocked."));
+  bumpOledActivity();
 }
 
 bool tryWakePs3FromSleep() {
@@ -1160,20 +1205,20 @@ body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:v
 <div class="status" id="status">Connecting...</div>
 
 <div class="sec">Winches</div>
-<div class="card" id="m0">
+<div class="card" id="m2">
   <h3>Boom</h3>
-  <div class="pad"><button class="up" onclick="cmd(0,1)">Up</button><button class="stp" onclick="cmd(0,0)">Stop</button><button class="dn" onclick="cmd(0,-1)">Down</button></div>
-  <div class="spd"><label>Spd</label><input type="range" min="0" max="255" value="200" oninput="speed(0,this.value)"></div>
+  <div class="pad"><button class="up" onclick="cmd(2,1)">Up</button><button class="stp" onclick="cmd(2,0)">Stop</button><button class="dn" onclick="cmd(2,-1)">Down</button></div>
+  <div class="spd"><label>Spd</label><input type="range" min="0" max="255" value="200" oninput="speed(2,this.value)"></div>
 </div>
 <div class="card" id="m1">
   <h3>Bucket</h3>
   <div class="pad"><button class="up" onclick="cmd(1,1)">Up</button><button class="stp" onclick="cmd(1,0)">Stop</button><button class="dn" onclick="cmd(1,-1)">Down</button></div>
   <div class="spd"><label>Spd</label><input type="range" min="0" max="255" value="200" oninput="speed(1,this.value)"></div>
 </div>
-<div class="card" id="m2">
+<div class="card" id="m0">
   <h3>Tilt</h3>
-  <div class="pad"><button class="up" onclick="cmd(2,1)">Tilt</button><button class="stp" onclick="cmd(2,0)">Stop</button><button class="dn" onclick="cmd(2,-1)">Dump</button></div>
-  <div class="spd"><label>Spd</label><input type="range" min="0" max="255" value="200" oninput="speed(2,this.value)"></div>
+  <div class="pad"><button class="up" onclick="cmd(0,1)">Tilt</button><button class="stp" onclick="cmd(0,0)">Stop</button><button class="dn" onclick="cmd(0,-1)">Dump</button></div>
+  <div class="spd"><label>Spd</label><input type="range" min="0" max="255" value="200" oninput="speed(0,this.value)"></div>
 </div>
 
 <div class="sec">Rotation</div>
@@ -1219,7 +1264,7 @@ function tracksBoth(d){
 function allStop(){fetch('/allstop').catch(function(){});for(var i=0;i<6;i++){var e=document.getElementById('m'+i);if(e)hlBtn(e,0);}hlBtn(document.getElementById('tracks-both'),0);}
 function fmtUp(ms){var s=Math.floor(ms/1000),m=Math.floor(s/60);s%=60;return(m<10?'0':'')+m+':'+(s<10?'0':'')+s;}
 function motorSummary(motors){
-  var n=['Boom','Bucket','Tilt','Rot','LTrk','RTrk'],a=[];for(var i=0;i<motors.length;i++)if(motors[i].dir!==0)a.push(n[i]);return a.length?a.join(', '):'Idle';
+  var n=['Tilt','Bucket','Boom','Rot','LTrk','RTrk'],a=[];for(var i=0;i<motors.length;i++)if(motors[i].dir!==0)a.push(n[i]);return a.length?a.join(', '):'Idle';
 }
 function applyStatus(s){
   webLocked=!!s.webLocked;
@@ -1353,6 +1398,7 @@ void setup() {
       // Apply motor state (handles speed-only updates by re-applying current direction)
       setMotor(m, motorDir[m], motorSpeed[m]);
       clearPs3SleepForPhone();
+      bumpOledActivity();
       refreshStatus();
     }
     server.send(200, "text/plain", "ok");
@@ -1385,6 +1431,7 @@ void setup() {
   refreshStatus();
   bootTimeMs = millis();
   lastPs3ActivityMs = bootTimeMs;
+  lastOledActivityMs = bootTimeMs;
   Serial.println(F("[DraglineCrane] Web server started. Ready."));
 }
 
@@ -1410,9 +1457,10 @@ void loop() {
   }
 
   tickActionLed();
+  tickOledSleep();
 
   uint32_t displayInterval = ps3Connected ? (DISPLAY_REFRESH_MS * 2) : DISPLAY_REFRESH_MS;
-  if (oledReady && (millis() - lastDisplayUpdate >= displayInterval)) {
+  if (oledReady && oledPanelOn && (millis() - lastDisplayUpdate >= displayInterval)) {
     updateDisplay();
   }
 }
